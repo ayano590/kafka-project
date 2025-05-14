@@ -1,0 +1,40 @@
+#!/bin/bash
+
+set -e
+
+# Start minikube
+minikube start -p kafka-project --memory=4096 --cpus=2
+
+# Apply namespaces first
+kubectl apply -f namespaces.yaml
+
+# Install Strimzi operator
+sed -i 's/namespace: .*/namespace: strimzi/' install/cluster-operator/*RoleBinding*.yaml
+kubectl create -f install/cluster-operator/020-RoleBinding-strimzi-cluster-operator.yaml -n kafka
+kubectl create -f install/cluster-operator/023-RoleBinding-strimzi-cluster-operator.yaml -n kafka
+kubectl create -f install/cluster-operator/031-RoleBinding-strimzi-cluster-operator-entity-operator-delegation.yaml -n kafka
+kubectl create -f install/cluster-operator -n strimzi
+
+# Wait for operator to be ready
+kubectl rollout status deploy/strimzi-cluster-operator -n strimzi
+
+# Deploy Kafka cluster
+kubectl apply -f metrics/kafka-metrics.yaml -n kafka
+
+# Wait for Kafka brokers to be ready (add polling logic if needed)
+kubectl wait kafka/kafka-cluster --for=condition=Ready --timeout=300s -n kafka
+
+# Deploy Kafka users (later)
+# kubectl apply -f manifests/03-kafka-users.yaml
+
+# Deploy Kafka topics
+kubectl apply -f topic/kafka-topic.yaml
+
+# Deploy Kafka Connect with auth (later)
+# kubectl apply -f manifests/04-kafka-connect.yaml
+
+# Deploy Prometheus + monitors (later)
+# kubectl apply -f manifests/06-monitoring/prometheus.yaml
+# kubectl apply -f manifests/06-monitoring/prometheus-rules.yaml
+# kubectl apply -f manifests/06-monitoring/strimzi-pod-monitor.yaml
+# kubectl apply -f manifests/06-monitoring/prometheus-additional.yaml

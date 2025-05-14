@@ -1,0 +1,111 @@
+# Copy the folders from the Github repository
+
+# Start the local Kubernetes cluster
+
+minikube start -p kafka-project --memory=4096 --cpus=2
+
+# Create all namespaces
+
+kubectl create namespace strimzi
+kubectl create namespace kafka
+kubectl create namespace sensor-producers
+kubectl create namespace stream-processor
+kubectl create namespace data-sinks
+kubectl create namespace monitoring
+
+# Set up the Cluster Operator
+
+sed -i 's/namespace: .*/namespace: strimzi/' install/cluster-operator/*RoleBinding*.yaml
+
+# install/cluster-operator/060-Deployment-strimzi-cluster-operator.yaml:
+# Add the namespaces in the STRIMZI_NAMESPACE values (strimzi,kafka)
+# For each namespace
+
+kubectl create -f install/cluster-operator/020-RoleBinding-strimzi-cluster-operator.yaml -n <watched_namespace>
+kubectl create -f install/cluster-operator/023-RoleBinding-strimzi-cluster-operator.yaml -n <watched_namespace>
+kubectl create -f install/cluster-operator/031-RoleBinding-strimzi-cluster-operator-entity-operator-delegation.yaml -n <watched_namespace>
+
+# Deploy the Cluster Operator
+
+kubectl create -f install/cluster-operator -n strimzi
+kubectl get deployments -n strimzi --watch
+
+# Deploy the CoreOS Prometheus Operator
+
+curl -s https://raw.githubusercontent.com/coreos/prometheus-operator/master/bundle.yaml > metrics/prometheus-install/prometheus-operator-deployment.yaml
+sed -E -i '/[[:space:]]*namespace: [a-zA-Z0-9-]*$/s/namespace:[[:space:]]*[a-zA-Z0-9-]*$/namespace: monitoring/' metrics/prometheus-install/prometheus-operator-deployment.yaml
+kubectl create -f metrics/prometheus-install/prometheus-operator-deployment.yaml
+
+# Set up Prometheus
+
+sed -i 's/namespace: .*/namespace: monitoring/' metrics/prometheus-install/prometheus.yaml
+
+# strimzi-pod-monitor.yaml:
+# change namespaceSelector.matchNames to "kafka"
+# prometheus-additional.yaml: create a "Secret" resource
+
+kubectl apply -f metrics/prometheus-additional-properties/prometheus-additional.yaml
+
+# Edit "additionalScrapeConfigs" in prometheus.yaml to use the Secret
+
+kubectl apply -f metrics/prometheus-install/strimzi-pod-monitor.yaml
+kubectl apply -f metrics/prometheus-install/prometheus-rules.yaml
+kubectl apply -f metrics/prometheus-install/prometheus.yaml
+
+-------WILL DO LATER--------
+
+# Set up Alert Manager
+# alert-manager-config.yaml:
+# replace values for slack_api_url and channel with the actual values
+# Create a "Secret" resource
+
+kubectl apply -f alert-manager-config.yaml
+
+# Deploy Alert Manager
+
+kubectl apply -f alert-manager.yaml
+
+-------WILL DO LATER--------
+
+# Deploy Grafana
+
+kubectl apply -f metrics/grafana-install/grafana.yaml
+kubectl get service grafana
+
+# Note the port number for port forwarding
+
+kubectl port-forward svc/grafana 3000:3000
+
+# Access the Grafana login screen http://localhost:3000
+# user and password: "admin"
+# Configuration > Data Sources, add Prometheus
+# Prometheus server URL http://prometheus-operated:9090
+# Import example dashboards
+
+# Deploy Kafka cluster (takes some time)
+
+kubectl apply -f metrics/kafka-metrics.yaml -n kafka
+
+# Deploy the KafkaTopics
+
+kubectl apply -f topic/kafka-topic.yaml -n kafka
+
+# Deploy Kafka Connect
+
+kubectl apply -f connect/kafka-connect.yaml -n kafka
+
+# Error, check with
+
+kubectl get kafkaconnect -n kafka
+kubectl describe kafkaconnect kafka-connect -n kafka
+kubectl -n strimzi logs deploy/strimzi-cluster-operator --tail 50
+kubectl delete kafkaconnector kafka-connector -n kafka
+
+# By the looks of it, the secret for tls is not available (havent configured tls yet)
+# According to Chatty you also have to tie the KafkaConnect CR to a specific Kafka cluster via labels
+
+metadata:
+  labels:
+    strimzi.io/cluster: kafka-cluster
+
+# Maybe the secretName is different

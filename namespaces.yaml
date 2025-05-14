@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: strimzi
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kafka
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sensor-producers
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: stream-processor
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: data-sinks
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
