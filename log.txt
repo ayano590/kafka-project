@@ -109,3 +109,7 @@ metadata:
     strimzi.io/cluster: kafka-cluster
 
 # Maybe the secretName is different
+
+# To start with a clean setup
+
+minikube delete -p kafka-project --purge
