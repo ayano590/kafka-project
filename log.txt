@@ -110,6 +110,63 @@ metadata:
 
 # Maybe the secretName is different
 
+# set up postgres
+
+helm repo add bitnami https://charts.bitnami.com/bitnami
+helm repo update
+
+helm install postgres bitnami/postgresql \
+  --namespace data-sinks \
+  --set auth.database=sensors \
+  --set auth.username=sensor_user \
+  --set auth.password=sensor_pass \
+  --set primary.resources.requests.memory=256Mi \
+  --set primary.resources.requests.cpu=100m \
+  --set architecture=standalone
+
+# check locally (not sure if i installed psql already) (will do later)
+
+kubectl port-forward svc/postgres-postgresql -n data-sinks 5432:5432
+psql -h localhost -U sensor_user -d sensors
+
+# Access the postgres pod
+
+kubectl exec -it -n data-sinks postgres-postgresql-0 -- bash
+psql -U sensor_user -d sensors
+
+# Enter your password ("sensor_pass")
+# Now create table
+
+CREATE TABLE sensor_readings (
+  id SERIAL PRIMARY KEY,
+  device_id TEXT,
+  timestamp TIMESTAMP,
+  value DOUBLE PRECISION
+);
+
+# Check tables
+
+\dt
+
+# Test connection from kafkaconnect pod
+
+export PGPASSWORD=$(kubectl get secret -n data-sinks postgres-postgresql \
+  -o jsonpath="{.data.password}" | base64 -d)
+
+kubectl run pg-test \
+  --rm -it \
+  -n kafka \
+  --image=docker.io/bitnami/postgresql:17.5.0-debian-12-r3 \
+  --env="PGPASSWORD=${PGPASSWORD}" \
+  --restart='Never' \
+  -- psql \
+      --host=postgres-postgresql.data-sinks.svc.cluster.local \
+      --port=5432 \
+      --username=sensor_user \
+      --dbname=sensors \
+      --pset pager=off \
+      --command="\dt"
+
 # To start with a clean setup
 
 minikube delete -p kafka-project --purge
