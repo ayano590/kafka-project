@@ -144,6 +144,13 @@ CREATE TABLE sensor_readings (
   value DOUBLE PRECISION
 );
 
+# Create secrets (not checked yet)
+
+kubectl create secret generic pg-credentials \
+  -n kafka \
+  --from-literal=username=sensor_user \
+  --from-literal=password=sensor_pass
+
 # Check tables
 
 \dt
