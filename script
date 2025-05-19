@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -e
+set -euo pipefail
 
 # Start minikube
 minikube start -p kafka-project --memory=4096 --cpus=2
@@ -21,7 +21,7 @@ kubectl rollout status deploy/strimzi-cluster-operator -n strimzi
 # Deploy Kafka cluster
 kubectl apply -f metrics/kafka-metrics.yaml -n kafka
 
-# Wait for Kafka brokers to be ready (add polling logic if needed)
+# Wait for Kafka brokers to be ready
 kubectl wait kafka/kafka-cluster --for=condition=Ready --timeout=300s -n kafka
 
 # Deploy Kafka users (later)
@@ -30,11 +30,102 @@ kubectl wait kafka/kafka-cluster --for=condition=Ready --timeout=300s -n kafka
 # Deploy Kafka topics
 kubectl apply -f topic/kafka-topic.yaml
 
-# Deploy Kafka Connect with auth (later)
-# kubectl apply -f manifests/04-kafka-connect.yaml
+# Deploy Kafka Connect
+kubectl apply -f connect/kafka-connect.yaml -n kafka
 
 # Deploy Prometheus + monitors (later)
 # kubectl apply -f manifests/06-monitoring/prometheus.yaml
 # kubectl apply -f manifests/06-monitoring/prometheus-rules.yaml
 # kubectl apply -f manifests/06-monitoring/strimzi-pod-monitor.yaml
 # kubectl apply -f manifests/06-monitoring/prometheus-additional.yaml
+
+# ---- Variables ----
+POSTGRES_NS="data-sinks"
+KAFKA_NS="kafka"
+RELEASE_NAME="postgres"
+
+TABLE_SQL="CREATE TABLE IF NOT EXISTS sensor_readings (
+  id SERIAL PRIMARY KEY,
+  device_id TEXT,
+  timestamp TIMESTAMP,
+  value DOUBLE PRECISION
+);"
+
+# ---- 1. Ensure namespace exists ----
+echo "🔧 Ensuring namespace ${POSTGRES_NS} exists…"
+kubectl create namespace "${POSTGRES_NS}" --dry-run=client -o yaml | kubectl apply -f -
+
+# ---- 2. Deploy PostgreSQL via Helm ----
+echo "📥 Adding/Updating Bitnami Helm repo…"
+helm repo add bitnami https://charts.bitnami.com/bitnami
+helm repo update
+
+echo "🚀 Installing/upgrading Postgres (${RELEASE_NAME}) in ${POSTGRES_NS}…"
+helm upgrade --install "${RELEASE_NAME}" bitnami/postgresql \
+  --namespace "${POSTGRES_NS}" \
+  --set auth.database=sensors \
+  --set auth.username=sensor_user \
+  --set auth.password=sensor_pass \
+  --set primary.resources.requests.memory=256Mi \
+  --set primary.resources.requests.cpu=100m \
+  --set architecture=standalone
+
+# ---- 3. Wait for Postgres to be ready ----
+echo "⏳ Waiting for Postgres pod to be ready…"
+kubectl wait --namespace "${POSTGRES_NS}" \
+  --for=condition=Ready pod \
+  -l app.kubernetes.io/name=postgresql \
+  --timeout=180s
+
+# ---- 4. Read credentials from the Bitnami-generated secret ----
+echo "🔐 Fetching DB credentials from Kubernetes secret…"
+SECRET_NAME="$(kubectl get secret -n "${POSTGRES_NS}" \
+  -l app.kubernetes.io/instance="${RELEASE_NAME}" \
+  -o jsonpath='{.items[0].metadata.name}')"
+
+DB_USER="sensor_user"
+DB_PASSWORD="$(kubectl get secret "${SECRET_NAME}" -n "${POSTGRES_NS}" \
+  -o jsonpath="{.data.password}" | base64 -d)"
+
+# ---- 5. Create a Secret for KafkaConnect to use ----
+echo "🔑 Creating pg-credentials secret in ${KAFKA_NS}…"
+kubectl create namespace "${KAFKA_NS}" --dry-run=client -o yaml | kubectl apply -f -
+kubectl create secret generic pg-credentials \
+  -n "${KAFKA_NS}" \
+  --from-literal=username="${DB_USER}" \
+  --from-literal=password="${DB_PASSWORD}" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# ---- 6. Initialize the table in Postgres ----
+echo "🧱 Creating table sensor_readings (if not exists)…"
+kubectl run pg-init \
+  --rm -it \
+  -n "${KAFKA_NS}" \
+  --image=docker.io/bitnami/postgresql:17.5.0-debian-12-r3 \
+  --env="PGPASSWORD=${DB_PASSWORD}" \
+  --restart='Never' \
+  --command -- psql \
+      --host="postgres-postgresql.${POSTGRES_NS}.svc.cluster.local" \
+      --port=5432 \
+      --username="${DB_USER}" \
+      --dbname="sensors" \
+      --pset pager=off \
+      --command="${TABLE_SQL}"
+
+# ---- 7. Verify from Kafka namespace ----
+echo "✅ Verifying connectivity and table existence…"
+kubectl run pg-test \
+  --rm -it \
+  -n "${KAFKA_NS}" \
+  --image=docker.io/bitnami/postgresql:17.5.0-debian-12-r3 \
+  --env="PGPASSWORD=${DB_PASSWORD}" \
+  --restart='Never' \
+  --command -- psql \
+      --host="postgres-postgresql.${POSTGRES_NS}.svc.cluster.local" \
+      --port=5432 \
+      --username="${DB_USER}" \
+      --dbname="sensors" \
+      --pset pager=off \
+      --command="\dt"
+
+echo "🎉 Done! PostgreSQL is up, table is created, and connection from Kafka namespace works."
